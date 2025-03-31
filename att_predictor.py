@@ -58,8 +58,8 @@ def evaluate_attributes(dataloader,model): #Evaluate the performance of the mode
         for i, data in enumerate(dataloader):
             #start = time.time()
             
-            images = data[0].cuda()
-            atts = data[1].cuda()
+            images = data[0].to(device)
+            atts = data[1].to(device)
             
             atts_predicted = model(images)
             

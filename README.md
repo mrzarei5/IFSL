@@ -1,6 +1,14 @@
 # Interpretable Few-shot Learning with Online Attribute Selection
 
-This repository contains the code for the paper 'Interpretable Few-shot Learning with Online Attribute Selection'.
+This repository contains the code for ['Interpretable Few-shot Learning with Online Attribute Selection'](https://doi.org/10.1016/j.neucom.2024.128755).
+
+## Requirements
+### Installation
+Create a conda environment and install dependencies:
+```bash
+conda create --name IFSL --file requirements.txt
+conda activate IFSL
+```
 
 ## Example Instructions
 
