@@ -1,386 +1,384 @@
-# The main code to train unknown attribute participation detector network (g_u)  [Experiment related to automatically balancing accuracy and interpretability]
+import os
+
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.optim as optim
-import torch.utils.data
-from torchvision import transforms
-
-from PIL import Image
-import json
-import numpy as np
-import os
-import torch.nn.functional as F
-import argparse
-import random
-from sklearn.metrics import accuracy_score
-from sklearn.metrics import confusion_matrix
+from torch.utils.data import DataLoader
+from tqdm import tqdm
 
 from models import AttSelector, AttPredictor, AttSelectorUnknown
-from utils import parse_args
+from utils import parse_args, setup_logger
 from datasets import FSLDataset
+from config import dataset_config
 
-
+# Determine device
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-def fsl_dists(prototypes,query_features,prototypes_fake, query_features_fake, selected_index, selected_index_real): #Estimate distances between query samples and prototypes of different classes
+class UnknownParticipationDetectorTrainer:
+    """
+    Trainer for detecting unknown attribute participation
+    in few-shot episodes.
+    """
 
-    query_features_ = torch.unsqueeze(query_features.view(query_features.size(0)*query_features.size(1),query_features.size(2)),1)
-    prototypes_ = torch.unsqueeze(prototypes,0)
+    def __init__(self, args):
+        self.args = args
+        self.device = device
 
-    size_0 = query_features_.size(0)
-    size_1 = prototypes_.size(1)
-    size_2 = query_features_.size(2)
+        # Hyperparameters
+        self.lr = args.lr_unk_part_detector
+        self.n_iter = args.n_iter
+        self.num_workers = args.num_workers
+        self.alpha = args.alpha
+        self.beta = args.beta
+        self.gamma = args.gamma
+        self.tau = args.tau
+        self.n_way = args.n_way
+        self.n_support = args.n_support
+        self.n_query = args.n_query
+        self.n_episode_train = args.n_episode_train
+        self.n_episode_test = 600  # fixed as in paper
 
-    query_features_ = query_features_.expand(size_0,size_1,size_2)   
-    
-    prototypes_ = prototypes_.expand(size_0,size_1,size_2)
+        # Dataset configuration
+        self.dataset = args.dataset
+        self.dataset_dir = args.dataset_dir
 
-    query_features_fake_ = torch.unsqueeze(query_features_fake.view(query_features_fake.size(0)*query_features_fake.size(1),query_features_fake.size(2)),1)
-    prototypes_fake_ = torch.unsqueeze(prototypes_fake,0)
+        # Prepare paths and directories
+        self._setup_paths()
 
-    size_0_fake = query_features_fake_.size(0)
-    size_1_fake = prototypes_fake_.size(1)
-    size_2_fake = query_features_fake_.size(2)
-    
-    
-    query_features_fake_ = query_features_fake_.expand(size_0_fake,size_1_fake,size_2_fake)   
-    
-    prototypes_fake_ = prototypes_fake_.expand(size_0_fake,size_1_fake,size_2_fake)
+        # Prepare data loaders
+        self._setup_data_loaders()
 
-    dist  = (((query_features_ - prototypes_)**2)*selected_index_real).sum(2)
-    dist2 = (((query_features_fake_ - prototypes_fake_)**2)*selected_index[0]).sum(2)
-
-    return dist+dist2
-def calculate_acc(prototypes,query_features, prototypes_fake, query_features_fake, selected_index, selected_index_real, n_query): #Calculate accuracy in one episode
-    query_features_ = torch.unsqueeze(query_features,1)
-    prototypes_ = torch.unsqueeze(prototypes,0)
-
-    size_0 = query_features_.size(0)
-    size_1 = prototypes_.size(1)
-    size_2 = query_features_.size(2)
-
-
-    query_features_ = query_features_.expand(size_0,size_1,size_2)   
-    prototypes_ = prototypes_.expand(size_0,size_1,size_2)
-
-    query_features_fake_ = torch.unsqueeze(query_features_fake,1)
-    prototypes_fake_ = torch.unsqueeze(prototypes_fake,0)
-
-    size_0_fake = query_features_fake_.size(0)
-    size_1_fake = prototypes_fake_.size(1)
-    size_2_fake = query_features_fake_.size(2)
-
-    query_features_fake_ = query_features_fake_.expand(size_0_fake,size_1_fake,size_2_fake)   
-    prototypes_fake_ = prototypes_fake_.expand(size_0_fake,size_1_fake,size_2_fake)
+        # Prepare networks
+        self._setup_networks()
 
 
-    dist  = (((query_features_ - prototypes_)**2)*selected_index_real).sum(2)
-    dist2 = (((query_features_fake_ - prototypes_fake_)**2)*selected_index[0]).sum(2)
-    
-    dist = dist + dist2
+        # Set up separate loggers for epoch metrics and best-model events
+        perf_log = os.path.join(self.save_dir, 'model_perf.txt')
+        best_log = os.path.join(self.save_dir, 'best_perf.txt')
+        self.logger_perf = setup_logger("PerfLogger", perf_log, console=True)
+        self.logger_best = setup_logger("BestLogger", best_log)
 
-    min_args = torch.argmin(dist,1)
+        # Loss and optimizer
+        self.criterion = nn.CrossEntropyLoss(reduction='mean')
+        self.optimizer = optim.Adam(self.att_selector_unknown.parameters(), lr=self.lr)
 
-    query_labels = torch.tensor([[i] for i in range(prototypes.size(0))]).to(device)
-    query_labels = query_labels.repeat(1,n_query).flatten()
-    
-    sum = (min_args == query_labels).sum().item()
-    overall = len(query_labels)
-    return sum / overall * 100
+        # Freeze pretrained models
+        for param in self.predictor_known.parameters():
+            param.requires_grad = False
+        for param in self.predictor_unknown.parameters():
+            param.requires_grad = False
+        for param in self.att_selector_known.parameters():
+            param.requires_grad = False
 
-
-def evaluate(data_list, backboneNetwork, backboneNetwork_fake, attSelector, attSelector_real, att_size, att_size_fake, n_way, n_support, n_query): #Evaluate on a set of episodes
-    backboneNetwork.eval()
-    backboneNetwork_fake.eval()
-    attSelector.eval()
-    attSelector_real.eval()
-    acc_list = []
-    
-    selected_index_list = []
-
-    with torch.no_grad():
-        for i, data in enumerate(data_list):
-            
-            images = data[0][0,:].to(device)
-            atts = data[1][0,:].to(device)
+        self.best_acc = 0.0
 
 
-            images_size = images.size()
+    def _setup_paths(self):
+        base = self.args.save_dir_unknown_participation
+        ds = self.dataset
+        n_s = self.n_support
+        a = self.alpha
+        b = self.beta
+        g = self.gamma
 
-            images_reshape = images.contiguous().view(images_size[0]*images_size[1],images_size[2],images_size[3],images_size[4])
+        # Pretrained models paths
+        self.save_dir_att = os.path.join(base, ds)
+        self.save_dir_att_fake = os.path.join(base, ds, f"{n_s}_shot_unknown", "n_mi_learner_10_decoupling_weight_2.0")
+        self.save_dir_att_selector = os.path.join(base, ds, f"{self.n_way}_way_{n_s}_shot", f"l1_{a}_l2_{g}")
 
+        # Directory for this trainer's outputs
+        self.save_dir = os.path.join(base, ds, f"{self.n_way}_way_{n_s}_unknown_participation", f"l1_{a}_l2_{b}")
+        os.makedirs(self.save_dir, exist_ok=True)
 
-            atts_predicted_reshape = backboneNetwork(images_reshape)
-            atts_predicted_reshape_fake = backboneNetwork_fake(images_reshape)
-          
-            atts_predicted = atts_predicted_reshape.contiguous().view(n_way,n_support + n_query,-1)
-            atts_predicted_fake = atts_predicted_reshape_fake.contiguous().view(n_way,n_support + n_query,-1)
-    
-            support_features = atts_predicted[:,:n_support,:]
-            support_features_protos = support_features.mean(1).view(-1,att_size)
-
-            support_features_fake = atts_predicted_fake[:,:n_support,:]
-            support_features_protos_fake = support_features_fake.mean(1).view(-1,att_size_fake)
-
-
-            support_features_protos_mixed = torch.cat((support_features_protos,support_features_protos_fake),dim=1)
-
-            index_selected_real, _ = attSelector_real(support_features_protos)
-
-            index_selected, _ = attSelector(support_features_protos_mixed)
-    
-            index_selected = torch.ravel(index_selected)
+    def _setup_data_loaders(self):
+        # Determine attribute sizes and network dimensions
+        config = dataset_config[self.dataset]
+        self.att_size = config['att_size']
+        self.hid_dim_list = config['hid_dim_list']
+        self.att_size_fake = config['att_size']
+        self.hid_dim_list_fake = config['hid_dim_list']
+        self.input_size = config['input_size']
         
-            query_features_reshape = atts_predicted[:,n_support:,:].contiguous().view(n_way*n_query,att_size)
-            query_features_reshape_fake = atts_predicted_fake[:,n_support:,:].contiguous().view(n_way*n_query,att_size_fake)
+        # Create few-shot dataset loaders
+        train_ds = FSLDataset(
+            self.dataset_dir, 'base', self.n_episode_train,
+            self.n_way, self.n_support, self.n_query,
+            aug=True, input_size=self.input_size
+        )
+        val_ds = FSLDataset(
+            self.dataset_dir, 'val', self.n_episode_test,
+            self.n_way, self.n_support, self.n_query,
+            aug=False, input_size=self.input_size
+        )
+        test_ds = FSLDataset(
+            self.dataset_dir, 'novel', self.n_episode_test,
+            self.n_way, self.n_support, self.n_query,
+            aug=False, input_size=self.input_size
+        )
 
-            selected_index_list.append(index_selected.detach())
-            
-            acc = calculate_acc(support_features_protos,query_features_reshape, support_features_protos_fake, query_features_reshape_fake, index_selected,index_selected_real,n_query)
-     
-    
-            acc_list.append(acc)
-    index_selected_list_all = [ind.sum().item() for ind in selected_index_list]
+        self.train_loader = DataLoader(
+            train_ds, batch_size=1, shuffle=True,
+            num_workers=self.num_workers, pin_memory=True
+        )
+        self.val_loader = DataLoader(
+            val_ds, batch_size=1, shuffle=False,
+            num_workers=self.num_workers, pin_memory=True
+        )
+        self.test_loader = DataLoader(
+            test_ds, batch_size=1, shuffle=False,
+            num_workers=self.num_workers, pin_memory=True
+        )
 
-    
-    acc_all  = np.array(acc_list)
-    return np.mean(acc_all), 1.96 * np.std(acc_all)/np.sqrt(len(data_list)), np.mean(index_selected_list_all), np.std(index_selected_list_all)
+    def _setup_networks(self):
+        # Load pretrained attribute predictor (real)
+        self.predictor_known = AttPredictor(
+            hid_dim_list=self.hid_dim_list,
+            att_size=self.att_size
+        ).to(self.device)
+        state_known = torch.load(os.path.join(self.save_dir_att, 'backboneNetwork-best.pth.tar'))
+        self.predictor_known.load_state_dict(state_known['model_state_dict'])
+
+        # Load pretrained attribute predictor (fake)
+        self.predictor_unknown = AttPredictor(
+            hid_dim_list=self.hid_dim_list_fake,
+            att_size=self.att_size_fake
+        ).to(self.device)
+        state_unk = torch.load(os.path.join(self.save_dir_att_fake, 'backboneNetwork-best.pth.tar'))
+        self.predictor_unknown.load_state_dict(state_unk['model_state_dict'])
+
+        # Load real attribute selector
+        self.att_selector_known = AttSelector(
+            tau=self.tau,
+            att_size=self.att_size
+        ).to(self.device)
+        sel_state = torch.load(os.path.join(self.save_dir_att_selector, 'attSelector-best.pth.tar'))
+        self.att_selector_known.load_state_dict(sel_state['model_state_dict'])
+
+        # Initialize unknown attribute selector
+        self.att_selector_unknown = AttSelectorUnknown(
+            tau=self.tau,
+            att_size=self.att_size + self.att_size_fake,
+            index_size=1
+        ).to(self.device)
 
 
-if __name__=='__main__':
+
+    @staticmethod
+    def _compute_fsl_distances(prototypes, query_feats, prototypes_fake, query_feats_fake, sel_idx, sel_idx_real):
+        """
+        Compute combined squared distances for real and fake features.
+        """
+        # real embeddings
+        qf = query_feats.contiguous().view(-1, query_feats.size(-1)).unsqueeze(1)
+        pf = prototypes.unsqueeze(0)
+        qf = qf.expand(-1, pf.size(1), -1)
+        pf = pf.expand(qf.size(0), -1, -1)
+
+        # fake embeddings
+        qf_fake = query_feats_fake.contiguous().view(-1, query_feats_fake.size(-1)).unsqueeze(1)
+        pf_fake = prototypes_fake.unsqueeze(0)
+        qf_fake = qf_fake.expand(-1, pf_fake.size(1), -1)
+        pf_fake = pf_fake.expand(qf_fake.size(0), -1, -1)
+
+        dist_real = ((qf - pf) ** 2 * sel_idx_real).sum(2)
+        dist_fake = ((qf_fake - pf_fake) ** 2 * sel_idx[0]).sum(2)
+        return dist_real + dist_fake
+
+    @staticmethod
+    def _calculate_acc(prototypes, query_feats, prototypes_fake, query_feats_fake, sel_idx, sel_idx_real, n_query):
+        """
+        Compute classification accuracy for one episode.
+        """
+        dists = UnknownParticipationDetectorTrainer._compute_fsl_distances(
+            prototypes, query_feats.unsqueeze(1),
+            prototypes_fake, query_feats_fake.unsqueeze(1),
+            sel_idx, sel_idx_real
+        )
+        preds = torch.argmin(dists, dim=1)
+        labels = torch.arange(prototypes.size(0), device=preds.device)
+        labels = labels.unsqueeze(1).repeat(1, n_query).view(-1)
+        correct = (preds == labels).sum().item()
+        return correct / labels.numel() * 100
+
+    def evaluate(self, loader):
+        """
+        Evaluate model on given loader.
+        Returns: (mean_acc, ci95, mean_sel, std_sel)
+        """
+        self.predictor_known.eval()
+        self.predictor_unknown.eval()
+        self.att_selector_unknown.eval()
+        self.att_selector_known.eval()
+
+        acc_list = []
+        sel_list = []
+
+        with torch.no_grad():
+            for data in loader:
+                imgs, _atts = data
+                images = imgs[0].to(self.device)
+                # reshape
+                n_cls, n_ex, c, h, w = images.size()
+                images_reshaped = images.contiguous().view(n_cls * n_ex, c, h, w)
+
+                # predict attributes
+                pred_real = self.predictor_known(images_reshaped)
+                pred_fake = self.predictor_unknown(images_reshaped)
+                pred_real = pred_real.contiguous().view(n_cls, self.n_support + self.n_query, -1)
+                pred_fake = pred_fake.contiguous().view(n_cls, self.n_support + self.n_query, -1)
+
+                # compute prototypes
+                proto_real = pred_real[:, :self.n_support, :].mean(1).view(n_cls, -1)
+                proto_fake = pred_fake[:, :self.n_support, :].mean(1).view(n_cls, -1)
+                mixed_proto = torch.cat((proto_real, proto_fake), dim=1)
+
+                # selection indices
+                sel_idx, _ = self.att_selector_unknown(mixed_proto)
+                sel_idx = sel_idx.view(-1)
+                sel_idx_real, _ = self.att_selector_known(proto_real)
+
+                sel_list.append(sel_idx.detach())
+
+                # query features
+                q_real = pred_real[:, self.n_support:, :].contiguous()
+                q_fake = pred_fake[:, self.n_support:, :].contiguous()
+
+                # compute accuracy
+                acc = self._calculate_acc(
+                    proto_real, q_real, proto_fake, q_fake,
+                    sel_idx, sel_idx_real, self.n_query
+                )
+                acc_list.append(acc)
+
+        sel_sums = [s.sum().item() for s in sel_list]
+        acc_arr = np.array(acc_list)
+        mean_acc = acc_arr.mean()
+        ci95 = 1.96 * acc_arr.std() / np.sqrt(len(acc_arr))
+        return mean_acc, ci95, np.mean(sel_sums), np.std(sel_sums)
+
+    def train(self):
+        """
+        Main training loop.
+        """
+        for epoch in tqdm(range(self.n_iter), desc="Epoch"): 
+            epoch_loss = 0.0
+            loss_class = 0.0
+            loss_sel = 0.0
+            sel_list = []
+
+            self.att_selector_unknown.train()
+            for data in self.train_loader:
+                imgs, _atts = data
+                images = imgs[0].to(self.device)
+                n_cls, n_ex, c, h, w = images.size()
+                images_reshaped = images.contiguous().view(n_cls * n_ex, c, h, w)
+
+                # attribute predictions
+                pred_real = self.predictor_known(images_reshaped)
+                pred_fake = self.predictor_unknown(images_reshaped)
+                pred_real = pred_real.view(n_cls, self.n_support + self.n_query, -1)
+                pred_fake = pred_fake.view(n_cls, self.n_support + self.n_query, -1)
+
+                # prototypes
+                proto_real = pred_real[:, :self.n_support, :].mean(1).view(n_cls, -1)
+                proto_fake = pred_fake[:, :self.n_support, :].mean(1).view(n_cls, -1)
+                mixed_proto = torch.cat((proto_real, proto_fake), dim=1)
+
+                # selection
+                sel_idx, _ = self.att_selector_unknown(mixed_proto)
+                sel_idx = sel_idx.view(-1)
+                sel_idx_real, _ = self.att_selector_known(proto_real)
+                sel_list.append(sel_idx.detach())
+
+                # compute distances and losses
+                dists = self._compute_fsl_distances(
+                    proto_real, pred_real[:, self.n_support:, :],
+                    proto_fake, pred_fake[:, self.n_support:, :],
+                    sel_idx, sel_idx_real
+                )
+                labels = torch.arange(n_cls, device=self.device)
+                labels = labels.unsqueeze(1).repeat(1, self.n_query).view(-1)
+                loss1 = self.criterion(-dists, labels)
+                loss2 = sel_idx.sum()
+
+                loss = self.alpha * loss1 + self.beta * loss2
+                self.optimizer.zero_grad()
+                loss.backward()
+                self.optimizer.step()
+
+                epoch_loss += loss.item()
+                loss_class += (self.alpha * loss1).item()
+                loss_sel += (self.beta * loss2).item()
+
+            # Compute metrics after epoch
+            train_sel_sums = [s.sum().item() for s in sel_list]
+            val_acc, val_ci, val_mean, val_std = self.evaluate(self.val_loader)
+
+            # Log performance
+
+            self.logger_perf.info(
+                f"Epoch {epoch} | "
+                f"Loss {epoch_loss/len(self.train_loader):.4f} | "
+                f"Class Loss {loss_class/len(self.train_loader):.4f} | "
+                f"Select Loss {loss_sel/len(self.train_loader):.4f} | "
+                f"Val Acc {val_acc:.2f} | CI95 {val_ci:.2f} | "
+                f"Temp {self.att_selector_unknown.tau:.4f}"
+            )
+            self.logger_perf.info(
+                f"Epoch {epoch} | "
+                f"Train Sel Mean {np.mean(train_sel_sums):.2f} | "
+                f"Train Sel Std {np.std(train_sel_sums):.2f}"
+            )
+            self.logger_perf.info(
+                f"Epoch {epoch} | "
+                f"Val Sel Mean {val_mean:.2f} | "
+                f"Val Sel Std {val_std:.2f}\n"
+            )
+
+            # Save best model if criteria met
+            if val_acc > self.best_acc and 0.1 <= val_mean <= 0.9:
+                test_acc, test_ci, test_mean, test_std = self.evaluate(self.test_loader)
+                self.logger_best.info(
+                    f"Epoch {epoch} | "
+                    f"Loss {epoch_loss/len(self.train_loader):.4f} | "
+                    f"Class Loss {loss_class/len(self.train_loader):.4f} | "
+                    f"Select Loss {loss_sel/len(self.train_loader):.4f} | "
+                    f"Val Acc {val_acc:.2f} | CI95 {val_ci:.2f} | "
+                    f"Test Acc {test_acc:.2f} | CI95 {test_ci:.2f} | "
+                    f"Temp {self.att_selector_unknown.tau:.4f}"
+                )
+                self.logger_best.info(
+                    f"Epoch {epoch} | "
+                    f"Train Sel Mean {np.mean(train_sel_sums):.2f} | "
+                    f"Train Sel Std {np.std(train_sel_sums):.2f}"
+                )
+                self.logger_best.info(
+                    f"Epoch {epoch} | "
+                    f"Val Sel Mean {val_mean:.2f} | "
+                    f"Val Sel Std {val_std:.2f} | "
+                    f"Test Sel Mean {test_mean:.2f} | Test Sel Std {test_std:.2f}\n"
+                )
+                # Save selector state
+                torch.save({
+                    'epoch': epoch,
+                    'model_state_dict': self.att_selector_unknown.state_dict(),
+                    'val_acc': val_acc,
+                    'train_loss': epoch_loss,
+                    'best_acc': self.best_acc
+                }, os.path.join(self.save_dir, 'attSelector-best.pth.tar'))
+                self.best_acc = val_acc
+
+            # Decay temperature
+            if epoch > 0 and epoch % 25 == 0 and self.att_selector_unknown.tau > 0.5:
+                self.att_selector_unknown.tau /= 2
+
+
+def main():
     args = parse_args('unk_att_participation')
+    trainer = UnknownParticipationDetectorTrainer(args)
+    trainer.train()
 
 
-    lr_unk_part_detector = args.lr_unk_part_detector
-    n_episode_train = args.n_episode_train
-    n_iter = args.n_iter
-    num_workers = args.num_workers
-    alpha = args.alpha
-    beta = args.beta
-    gamma = args.gamma
-    dataset_dir = args.dataset_dir
-    dataset = args.dataset
-    save_dir = args.save_dir_unknown_participation
-    n_way = args.n_way
-    n_query = args.n_query
-    n_support = args.n_support
-    tau = args.tau    
-
-
-
-    if args.dataset == 'CUB':
-        att_size = 312
-        hid_dim_list = [64,128,256]
-        att_size_fake = 312
-        hid_dim_list_fake = [64,128,256]
-        input_size = (84, 84)
-    elif args.dataset == 'AWA2':
-        att_size = 85
-        hid_dim_list = [64,64,64]
-        att_size_fake = 85
-        hid_dim_list_fake = [64,64,64]
-        input_size = (84, 84)
-    elif args.dataset == 'SUN':
-        att_size = 102
-        hid_dim_list = [64,64,64]
-        att_size_fake = 102
-        hid_dim_list_fake = [64,64,64]
-        input_size = (84, 84)
-    elif args.dataset == 'APY':
-        att_size = 64
-        hid_dim_list = [64,64,64]
-        att_size_fake = 64
-        hid_dim_list_fake = [64,64,64]
-        input_size = (84, 84)
-    elif args.dataset == 'CIFAR100':
-        att_size = 235
-        hid_dim_list = [64,64,128]
-        att_size_fake = 235
-        hid_dim_list_fake = [64,64,128]
-        input_size = (32, 32)
-
-    att_size_fake = att_size
-    att_size_overall = att_size + att_size_fake
-
-    cross_entropy_criterioin = nn.CrossEntropyLoss(reduction='mean')
-
-
-    save_dir_att = save_dir + '/' + dataset
-    save_dir_att_fake = save_dir + '/' + dataset + '/' + str(n_support)+'_shot_unknown/'+'n_mi_learner_10_decoupling_weight_2.0'
-
-    save_dir_att_selector = save_dir + '/' + dataset + '/'+str(n_way)+'_way_'+str(n_support)+'_shot'+ '/'+ 'l1_' + str(alpha) + '_l2_' + str(gamma)
-
-    #save_dir = save_dir + '/' + dataset + '/'+str(n_way)+'_way_'+str(n_support)+'_unknown_participation_updated'+ '/'+ 'l1_' + str(alpha) + '_l2_' + str(beta)
-    save_dir = save_dir + '/' + dataset + '/'+str(n_way)+'_way_'+str(n_support)+'_unknown_participation'+ '/'+ 'l1_' + str(alpha) + '_l2_' + str(beta)
-    
-    if not os.path.isdir(save_dir):
-        os.makedirs(save_dir)
-
-
-    n_episode_test = 600
-
-
-
-    train_datafile = dataset_dir + '/base.json'
-    train_dataset_fsl = FSLDataset(dataset_dir, train_datafile, n_episode_train, n_way, n_support, n_query, aug = True, input_size= input_size)
-    train_loader_fsl = torch.utils.data.DataLoader(train_dataset_fsl, batch_size=1, shuffle=True,num_workers = num_workers, pin_memory = True)
-
-    val_datafile = dataset_dir + '/val.json'
-    val_dataset_fsl = FSLDataset(dataset_dir,val_datafile, n_episode_test, n_way, n_support, n_query, aug = False, input_size= input_size)
-    val_loader_fsl = torch.utils.data.DataLoader(val_dataset_fsl, batch_size=1, shuffle=False,num_workers = num_workers, pin_memory = True)
-
-    test_datafile = dataset_dir + '/novel.json'
-    test_dataset_fsl = FSLDataset(dataset_dir, test_datafile, n_episode_test, n_way, n_support, n_query, aug = False, input_size= input_size)
-    test_loader_fsl = torch.utils.data.DataLoader(test_dataset_fsl, batch_size=1, shuffle=False,num_workers = num_workers, pin_memory = True)
-
-
-
-    backboneNetwork = AttPredictor(hid_dim_list= hid_dim_list, att_size= att_size)   #load attribute predictor network for human friendly attributes
-    backboneNetwork_saved = torch.load(os.path.join(save_dir_att,'backboneNetwork-best.pth.tar'))
-    backboneNetwork.load_state_dict(backboneNetwork_saved['model_state_dict'])
-    backboneNetwork.to(device)
-
-
-    backboneNetwork_fake = AttPredictor(hid_dim_list= hid_dim_list_fake, att_size= att_size_fake) #load unknown attirubte predictor network
-    backboneNetwork_saved_fake = torch.load(os.path.join(save_dir_att_fake,'backboneNetwork-best.pth.tar'))
-    backboneNetwork_fake.load_state_dict(backboneNetwork_saved_fake['model_state_dict'])
-    backboneNetwork_fake.to(device)
-
-
-    attSelector_real = AttSelector(tau=tau, att_size=att_size)  #load human-friendly attribute selector network
-    attSelector_real_saved = torch.load(os.path.join(save_dir_att_selector,'attSelector-best.pth.tar'))
-    attSelector_real.load_state_dict(attSelector_real_saved['model_state_dict'])
-    attSelector_real.to(device)
-
-    attSelector = AttSelectorUnknown(tau=tau, att_size=att_size+att_size_fake, index_size=1)
-    attSelector.to(device)
-    optimizer_attSelector = optim.Adam(attSelector.parameters(), lr=lr_unk_part_detector) 
-    
-    for param in backboneNetwork.parameters():
-        param.requires_grad = False
-
-    for param in backboneNetwork_fake.parameters():
-        param.requires_grad = False
-
-    for param in attSelector_real.parameters():
-        param.requires_grad = False
-
-
-    best_acc = 0
-    for e in range(n_iter):
-        epoch_loss = 0
-        class_loss = 0
-        selected_index_fake_loss = 0
-
-        selected_index_list = []
-        attSelector.train()
-        for i,data in enumerate(train_loader_fsl):
-
-            images = data[0][0,:].to(device)
-            atts = data[1][0,:].to(device)
-
-            images_size = images.size()
-            
-            images_reshape = images.contiguous().view(images_size[0]*images_size[1],images_size[2],images_size[3],images_size[4])
-
-
-            atts_predicted_reshape = backboneNetwork(images_reshape)
-            
-            atts_predicted_reshape_fake = backboneNetwork_fake(images_reshape)
-
-            
-            atts_predicted = atts_predicted_reshape.contiguous().view(n_way,n_support + n_query,-1)
-
-            atts_predicted_fake = atts_predicted_reshape_fake.contiguous().view(n_way,n_support + n_query,-1)
-
-            
-        
-            atts_support = atts_predicted[:,:n_support,:]
-            atts_prototypes = atts_support.mean(1).view(-1,att_size)
-
-            atts_support_fake = atts_predicted_fake[:,:n_support,:]
-            atts_prototypes_fake = atts_support_fake.mean(1).view(-1,att_size_fake)
-
-
-            atts_prototypes_mixed = torch.cat((atts_prototypes,atts_prototypes_fake),dim=1)  #stack human-friendly and unknown prototypes
-
-
-            index_selected, _ = attSelector(atts_prototypes_mixed)  #The output will be a scalar which determines the particiaption of unknown attributes in the current episode
-
-            index_selected_real, _ = attSelector_real(atts_prototypes)
-            
-        
-            selected_index_list.append(index_selected.detach())
-            
-            support_features = atts_predicted[:,:n_support,:]
-            support_features_fake = atts_predicted_fake[:,:n_support,:]
-
-
-            query_labels_np = np.repeat(np.array([[i] for i in range(n_way)]),n_query,axis=1) 
-            query_labels = torch.from_numpy(query_labels_np).to(device)
-            query_labels_reshape = query_labels.contiguous().view(n_way*n_query)
-            
-            support_features_protos = support_features.mean(1).view(n_way,att_size)
-            support_features_protos_fake = support_features_fake.mean(1).view(n_way,att_size_fake)
-
-
-            query_features = atts_predicted[:,n_support:,:].contiguous().view(n_way,n_query,att_size)
-            query_features_fake = atts_predicted_fake[:,n_support:,:].contiguous().view(n_way,n_query,att_size_fake)
-
-            
-            dists = fsl_dists(support_features_protos,query_features,support_features_protos_fake, query_features_fake,index_selected, index_selected_real)
-            
-            
-            loss1 = cross_entropy_criterioin(-dists,query_labels_reshape)
-            
-            loss2 = index_selected.sum()
-
-        
-            attSelector.zero_grad()
-            
-            loss1 = alpha*loss1
-            loss2 = beta*loss2 
-            
-
-            loss = loss1 + loss2 
-        
-            loss.backward()
-            
-            optimizer_attSelector.step()
-
-            epoch_loss += loss.item()
-            class_loss += loss1.item()
-            selected_index_fake_loss += loss2.item()
-            
-        selected_index_list_all = [ind.sum().item() for ind in selected_index_list]
-    
-        val_acc, val_acc_std, val_mean, val_std = evaluate(val_loader_fsl, backboneNetwork, backboneNetwork_fake, attSelector, attSelector_real, att_size, att_size_fake, n_way, n_support, n_query)
-        
-        with open(save_dir+'/model_perf.txt', 'a') as f:
-            f.write('Iter {:d} | Loss: {:f} | Class Loss {:f} | Selected Index Fake Loss {:f} | Val Acc {:f} | Val Std {:f} | Temp {:f}\n'.format(e, epoch_loss/len(train_loader_fsl), class_loss/len(train_loader_fsl), selected_index_fake_loss/len(train_loader_fsl), val_acc, val_acc_std, attSelector.tau))
-            f.write('Iter {:d} | Train Index mean: {:f} | Train Index std {:f} \n'.format(e, np.mean(selected_index_list_all), np.std(selected_index_list_all)))
-            f.write('Iter {:d} | Val Index mean {:f} | Val Index std {:f} \n'.format(e, val_mean, val_std))
-            
-            f.write('\n')
-        if val_acc > best_acc and val_mean < 1 and val_mean != 0 and val_mean >= 0.1 and val_mean <= 0.9:
-            
-            test_acc, test_acc_std, test_mean, test_std = evaluate(test_loader_fsl, backboneNetwork, backboneNetwork_fake, attSelector, attSelector_real, att_size, att_size_fake, n_way, n_support, n_query)
-            
-            with open(save_dir+'/best_perf.txt', 'a') as f:
-                f.write('Iter {:d} | Loss: {:f} | Class Loss {:f} | Selected Index Fake Loss {:f}| Val Acc {:f} | Val Std {:f} | Test Acc {:f} | Test Std {:f} | Temp {:f}\n'.format(e, epoch_loss/len(train_loader_fsl), class_loss/len(train_loader_fsl), selected_index_fake_loss/len(train_loader_fsl), val_acc, val_acc_std, test_acc, test_acc_std, attSelector.tau))
-                #f.write('Iter {:d} | Train Index mean: {:f} | Train Index std {:f} | Val Index mean {:f} | Val Index std {:f}| Test Index mean {:f} | Test Index std {:f}\n'.format(e, train_mean, train_std, val_mean, val_std, test_mean, test_std))
-                f.write('Iter {:d} | Train Index mean: {:f} | Train Index std {:f} \n'.format(e, np.mean(selected_index_list_all), np.std(selected_index_list_all)))
-                f.write('Iter {:d} | Val Index mean {:f} | Val Index std {:f} | Test Index mean {:f} | Test Index std {:f} \n'.format(e, val_mean, val_std, test_mean, test_std))
-
-                f.write('\n')
-            torch.save({
-                'epoch' : e,
-                'model_state_dict' : attSelector.state_dict(),
-                'val_acc' : val_acc,
-                'train_loss' : epoch_loss,
-                'best_acc' : best_acc,
-                }, os.path.join(save_dir,'attSelector-best.pth.tar'))
-            best_acc = val_acc
-
-        if e > 0 and e % 25 == 0 and attSelector.tau > 0.5:
-            attSelector.tau = attSelector.tau / 2
+if __name__ == '__main__':
+    main()

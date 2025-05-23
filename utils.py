@@ -1,10 +1,10 @@
 import argparse
-
+import logging
 
 def parse_args(network):
     parser = argparse.ArgumentParser(description='FSL script %s' %(network))
-    parser.add_argument('--num_workers', type=int, default=12, help='Number of workers for datasets')
-    parser.add_argument('--dataset_dir', default='', help='dataset location')
+    parser.add_argument('--num_workers', type=int, default=8, help='Number of workers for datasets')
+    parser.add_argument('--dataset_dir', help='dataset location')
     parser.add_argument('--dataset', default='CUB', help='dataset name')
     
     
@@ -78,3 +78,20 @@ def parse_args(network):
         parser.add_argument('--gamma', type= float, default=0, help='gamma')
         parser.add_argument('--tau', type= float, default=0.5, help='Temperature of Gumbel Softmax')
     return parser.parse_args()
+
+
+def setup_logger(name, log_file, level=logging.INFO, console=True):
+    logger = logging.getLogger(name)
+    logger.setLevel(level)
+    formatter = logging.Formatter('%(asctime)s - %(message)s')
+
+    fh = logging.FileHandler(log_file, mode='a')
+    fh.setFormatter(formatter)
+    logger.addHandler(fh)
+
+    if console:
+        ch = logging.StreamHandler()
+        ch.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
+        logger.addHandler(ch)
+
+    return logger

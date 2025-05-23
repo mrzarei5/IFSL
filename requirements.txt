@@ -1,5 +1,7 @@
-torch
-torchvision
-Pillow
-numpy
-scikit-learn
+joblib==1.4.2
+numpy==1.21.6
+Pillow==9.5.0
+scikit-learn==1.0.2
+scipy==1.10.1
+threadpoolctl==3.5.0
+tqdm==4.67.1

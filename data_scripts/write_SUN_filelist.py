@@ -11,21 +11,18 @@ import torch
 parser = argparse.ArgumentParser(description='write_AwA2_filelist')
 
 
-parser.add_argument('--dataset', default='C:/My Files/Carleton/Thesis/research/datasets/AwA2', help='dataset location')
+parser.add_argument('--dataset_files', default='./datasets/SUN/', help='dataset location')
 
 args = parser.parse_args()
-cwd = args.dataset
-#cwd = os.getcwd() 
 
-text_files = join(cwd,'SUNAttributeDB') 
+dataset_dir = args.dataset_files
 
-data_path = join(cwd,'images') 
-savedir = cwd + '/'
+text_files = join(dataset_dir,'SUNAttributeDB') 
+
+data_path = join(dataset_dir,'images') 
 
 dataset_list = ['base','val','novel']
 
-#classes = []
-#images = []
 classes_to_images = {}
 image_to_image_index = {} #to find attributes
 #580,65,72
@@ -60,7 +57,7 @@ classes_dic = {'base':classes_base,'val':classes_val,'novel':classes_novel}
 
 
 for dataset in dataset_list:
-    fo = open(savedir + dataset + ".json", "w")
+    fo = open(join(dataset_dir, dataset + ".json"), "w")
     fo.write('{"label_names": [')
     fo.writelines(['"%s",' % item  for item in classes])
     fo.seek(0, os.SEEK_END) 
@@ -91,7 +88,7 @@ for dataset in dataset_list:
     
     torch.save({
         'attr_labels' : attribute_labels
-    }, savedir +'{}_attr.pt'.format(dataset))
+    }, join(dataset_dir,'{}_attr.pt'.format(dataset)))
 
 
     image_names_this = []

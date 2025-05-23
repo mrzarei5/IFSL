@@ -6,8 +6,15 @@ This repository contains the code for ['Interpretable Few-shot Learning with Onl
 ### Installation
 Create a conda environment and install dependencies:
 ```bash
-conda create --name IFSL --file requirements.txt
+conda create --n IFSL python=3.8
 conda activate IFSL
+
+# Install dependencies
+pip install -r requirements.txt
+
+# Install torch and torchvision. 
+# Please refer to https://pytorch.org/ if you need a different cuda version
+pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
 ```
 
 ## Example Instructions
@@ -16,12 +23,12 @@ To train the framework on the CUB dataset, follow these steps:
 
 ### Prepare Data
 
-1. Create the directory `./datasets/CUB/data`.
+1. Create the directory `./datasets/CUB`.
 2. Download the dataset from [CUB Dataset](https://www.vision.caltech.edu/datasets/cub_200_2011/) and extract it into the created directory.
-3. Run the following command to prepare the data:
+3. Run the following command in the project root directory to prepare the data:
 
 ```bash
-python ./write_CUB_filelist.py --dataset=./datasets/CUB/data
+python data_scripts/write_CUB_filelist.py 
 ```
 
 ## Training the Main Framework
@@ -32,7 +39,7 @@ python ./write_CUB_filelist.py --dataset=./datasets/CUB/data
 Run the following command:
 
 ```bash
-python ./att_predictor.py --dataset=CUB --dataset_dir=./datasets/CUB/data/CUB_filelist
+python att_predictor.py --dataset=CUB --dataset_dir=./datasets/CUB
 ```
 
 ### Train Selector Network
@@ -40,7 +47,7 @@ python ./att_predictor.py --dataset=CUB --dataset_dir=./datasets/CUB/data/CUB_fi
 After the end of attribute predictor network training procedure, run the following command with appropriate parameters:
 
 ```bash
-python ./att_selector.py --alpha=1 --gamma=0 --dataset=CUB --dataset_dir=./datasets/CUB/data/CUB_filelist --n_support=1 --n_query=16
+python att_selector.py --alpha=1 --gamma=0 --dataset=CUB --dataset_dir=./datasets/CUB --n_support=1 --n_query=16
 ```
 
 ## Experiment related to Automatically Balancing Accuracy and Interpretability
@@ -50,11 +57,11 @@ Before executing these commands, the attribute predictor and attribute selector 
 ### Train Unknown Attribute Learner
 
 ```bash
-python ./att_learning_unknown.py --dataset=CUB --dataset_dir=./datasets/CUB/data/CUB_filelist --n_support=1
+python att_learning_unknown.py --dataset=CUB --dataset_dir=./datasets/CUB --n_support=1
 ```
 ### Train Unknown Attributes Participation Detector
 
 ```bash
-python ./unknown_participation_detector.py --alpha=1 --gamma=0 --beta=0.7 --dataset=CUB --dataset_dir=./datasets/CUB/data/CUB_filelist --n_support=1 --n_query=16
+python unknown_participation_detector.py --alpha=1 --gamma=0 --beta=0.7 --dataset=CUB --dataset_dir=./datasets/CUB --n_support=1 --n_query=16
 ```
 

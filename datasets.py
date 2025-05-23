@@ -6,22 +6,20 @@ from PIL import Image
 import numpy as np
 
 class AttDataset(torch.utils.data.Dataset):
-    def __init__(self, att_dir, datafile, aug, input_size):
+    def __init__(self, att_dir, split, aug, input_size):
 
-        self.input_size = input_size
-
-        with open(datafile, 'r') as f:
+        data_file = os.path.join(att_dir, split + '.json')
+        with open(data_file, 'r') as f:
             self.meta = json.load(f)
 
-        self.split = os.path.splitext(os.path.basename(datafile))[0]
-        attr_file = os.path.join(att_dir, '{}_attr.pt'.format(self.split))
+        attr_file = os.path.join(att_dir, '{}_attr.pt'.format(split))
         attr_data = torch.load(attr_file)
         self.attr_labels = attr_data['attr_labels']
         self.aug = aug
 
         if aug:
             self.transform = transforms.Compose([
-                transforms.Resize(self.input_size), 
+                transforms.Resize(input_size), 
                 transforms.ColorJitter(brightness=0.4, 
                                        contrast=0.4,
                                        saturation=0.4),
@@ -32,7 +30,7 @@ class AttDataset(torch.utils.data.Dataset):
             ])
         else:
             self.transform = transforms.Compose([
-                transforms.Resize(self.input_size),  
+                transforms.Resize(input_size),  
                 transforms.ToTensor(),
                 transforms.Normalize(mean=[0.485, 0.456, 0.406], 
                                      std=[0.229, 0.224, 0.225])
@@ -44,38 +42,34 @@ class AttDataset(torch.utils.data.Dataset):
         return self.transform(Image.open(img_path).convert('RGB'))
 
     def __getitem__(self,idx):
-        return self.get_img(idx), self.attr_labels[idx] # n_way x (n_query+n_support) X C x H x W
+        return self.get_img(idx), self.attr_labels[idx]
 
     def __len__(self):
         return len(self.img_labels)
 
 class FSLDataset(torch.utils.data.Dataset):
-    def __init__(self, att_dir, datafile, n_episode, n_way, n_support, n_query,
+    def __init__(self, att_dir, split, n_episode, n_way, n_support, n_query,
                  aug, input_size):
+        
+        data_file = os.path.join(att_dir, split + '.json')
         
         self.n_episode = n_episode
         self.n_way = n_way
         self.n_support = n_support
         self.n_query = n_query
 
-        #self.input_size = (224, 224)
-        self.input_size = input_size
-
-        with open(datafile, 'r') as f:
+        with open(data_file, 'r') as f:
             self.meta = json.load(f)
 
-        self.split = os.path.splitext(os.path.basename(datafile))[0]
-        attr_file = os.path.join(att_dir, '{}_attr.pt'.format(self.split))
+        attr_file = os.path.join(att_dir, '{}_attr.pt'.format(split))
         attr_data = torch.load(attr_file)
         self.attr_labels = attr_data['attr_labels']
         self.aug = aug
 
-
-
         if aug:
             self.transform = transforms.Compose([
 
-                transforms.Resize(self.input_size), 
+                transforms.Resize(input_size), 
                 transforms.ColorJitter(brightness=0.4, 
                                        contrast=0.4,
                                        saturation=0.4),
@@ -86,7 +80,7 @@ class FSLDataset(torch.utils.data.Dataset):
             ])
         else:
             self.transform = transforms.Compose([
-                transforms.Resize(self.input_size),  
+                transforms.Resize(input_size),  
                 transforms.ToTensor(),
                 transforms.Normalize(mean=[0.485, 0.456, 0.406], 
                                      std=[0.229, 0.224, 0.225])

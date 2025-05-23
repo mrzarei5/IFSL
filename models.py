@@ -26,7 +26,7 @@ def conv_block(in_channels, out_channels, func = nn.ReLU(),batch_norm = 1, max_p
     if batch_norm == 1:
         conv.add_module("batch_norm",nn.BatchNorm2d(out_channels))
 
-    if func != None:
+    if func is not None:
         conv.add_module("activation_function",func)
 
     if max_pool == 1:
