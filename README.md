@@ -1,67 +1,126 @@
-# Interpretable Few-shot Learning with Online Attribute Selection
+# Interpretable Few-Shot Learning with Online Attribute Selection
 
-This repository contains the code for ['Interpretable Few-shot Learning with Online Attribute Selection'](https://doi.org/10.1016/j.neucom.2024.128755).
+This is the official implementation of **“Interpretable Few-Shot Learning with Online Attribute Selection”**, published in *Neurocomputing* 614 (2025) 128755.
 
-## Requirements
-### Installation
-Create a conda environment and install dependencies:
-```bash
-conda create --n IFSL python=3.8
-conda activate IFSL
+[![DOI](https://img.shields.io/badge/DOI-10.1016%2Fj.neucom.2024.128755-blue)](https://doi.org/10.1016/j.neucom.2024.128755)  
+[![Python](https://img.shields.io/badge/python-3.8%2B-blue)](https://www.python.org/)  
+[![PyTorch](https://img.shields.io/badge/pytorch-1.8%2B-orange)](https://pytorch.org/)  
+[![License](https://img.shields.io/badge/License-MIT-green)](LICENSE)
 
-# Install dependencies
-pip install -r requirements.txt
 
-# Install torch and torchvision. 
-# Please refer to https://pytorch.org/ if you need a different cuda version
-pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
+
+## Overview
+
+
+Few-shot learning (FSL) seeks to generalize to new classes from only a handful of examples, yet most FSL methods remain opaque, limiting user trust and interpretability. This repository provides the official implementation of an inherently interpretable FSL framework that:
+
+1. **Predicts human-friendly attributes** from images, serving as a semantically meaningful embedding space.  
+2. **Selects relevant attributes online** via a lightweight Gumbel-Softmax mechanism, filtering out noise and improving both accuracy and clarity.  
+3. **Detects insufficiency of known attributes** in each episode and dynamically augments the pool with learned “unknown” attributes when needed.  
+
+Our method achieves results on par with black-box FSL models on four standard benchmarks (CUB, AWA, SUN, aPY) while delivering clear, attribute-based explanations that align more closely with human reasoning.
+
+<p align="center">
+  <img src="assets/diagram.png" alt="Framework Architecture" width="600"/>
+  <br>
+  <em> High-level pipeline of few-shot classification using IFSL. Top: The process of predicting and selecting relevant human-friendly attributes for the current episode. Bottom: The process of predicting unknown attributes and deciding whether the unknown attributes should participate in the current episode or not.</em>
+</p>
+
+---
+
+## Installation
+
+1. **Clone the repository**  
+   ```bash
+   git clone https://github.com/mrzarei5/IFSL.git
+   cd IFSL
+   ```
+
+2. **Create & activate Conda environment**  
+   ```bash
+   conda create -n IFSL python=3.8
+   conda activate IFSL
+   ```
+
+3. **Install dependencies**
+    ```bash
+    pip install -r requirements.txt
+    # For GPU support (adjust CUDA version as needed):
+    pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
+    ```
+
+## Data Preparation
+
+Place your datasets under the `datasets/` folder with this structure:
+
+```text
+IFSL/
+├── datasets/
+│   ├── CUB/
+│   ├── AWA/
+│   ├── SUN/
+│   └── aPY/
+├── ...
 ```
 
-## Example Instructions
-
-To train the framework on the CUB dataset, follow these steps:
-
-### Prepare Data
-
-1. Create the directory `./datasets/CUB`.
-2. Download the dataset from [CUB Dataset](https://www.vision.caltech.edu/datasets/cub_200_2011/) and extract it into the created directory.
-3. Run the following command in the project root directory to prepare the data:
+Generate filelists for each dataset:
 
 ```bash
-python data_scripts/write_CUB_filelist.py 
+python data_scripts/write_CUB_filelist.py # Repeat/adapt for AWA, SUN, aPY
 ```
 
-## Training the Main Framework
+## Usage
 
+1. **Train the Attribute Predictor**
+    ```bash
+    python att_predictor.py \
+    --dataset CUB \
+    --dataset_dir ./datasets/CUB \
+    --n_support 1 --n_query 16 \
+    --lr_backbone_network 1e-3
+    ```
 
-### Train Attribute Predictor
+2. **Train the Attribute Selector**
+    ```bash
+    python att_selector.py \
+    --dataset CUB \
+    --dataset_dir ./datasets/CUB \
+    --alpha 1.0 --gamma 0.0
+    ```
 
-Run the following command:
+3. **Learn Unknown Attributes**
+    ```bash
+    python att_learning_unknown.py \
+    --dataset CUB \
+    --dataset_dir ./datasets/CUB \
+    --n_support 1 \
+    --n_mi_learner 10 \
+    --decoupling_weight 2.0
+    ```
 
-```bash
-python att_predictor.py --dataset=CUB --dataset_dir=./datasets/CUB
-```
+4. **Train Unknown Participation Detector**
+    ```bash
+    python unknown_participation_detector.py \
+    --dataset CUB \
+    --dataset_dir ./datasets/CUB \
+    --alpha 1.0 --gamma 0.0 --beta 0.7 \
+    --n_support 1 --n_query 16
+    ```
 
-### Train Selector Network
+##Citation
+Please cite our work if you use this code or dataset:
 
-After the end of attribute predictor network training procedure, run the following command with appropriate parameters:
+If you use this work, please cite:
 
-```bash
-python att_selector.py --alpha=1 --gamma=0 --dataset=CUB --dataset_dir=./datasets/CUB --n_support=1 --n_query=16
-```
-
-## Experiment related to Automatically Balancing Accuracy and Interpretability
-
-Before executing these commands, the attribute predictor and attribute selector networks should be trained using the previous steps.
-
-### Train Unknown Attribute Learner
-
-```bash
-python att_learning_unknown.py --dataset=CUB --dataset_dir=./datasets/CUB --n_support=1
-```
-### Train Unknown Attributes Participation Detector
-
-```bash
-python unknown_participation_detector.py --alpha=1 --gamma=0 --beta=0.7 --dataset=CUB --dataset_dir=./datasets/CUB --n_support=1 --n_query=16
-```
-
+```bibtex
+@article{Zarei2025IFSL,
+    title   = {Interpretable Few‐Shot Learning with Online Attribute Selection},
+    author = {Mohammad Reza Zarei and Majid Komeili},
+    journal = {Neurocomputing},
+    volume = {614},
+    pages = {128755},
+    year = {2025},
+    issn = {0925-2312},
+    doi = {https://doi.org/10.1016/j.neucom.2024.128755},
+    url = {https://www.sciencedirect.com/science/article/pii/S0925231224015261}
+}
