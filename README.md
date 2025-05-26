@@ -46,7 +46,7 @@ Our method achieves results on par with black-box FSL models on four standard be
     ```bash
     pip install -r requirements.txt
     # For GPU support (adjust CUDA version as needed):
-    pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
+    pip install torch torchvision --index-url https://download.pytorch.org/whl/cu118
     ```
 
 ## Data Preparation
