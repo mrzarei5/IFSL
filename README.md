@@ -107,7 +107,8 @@ python data_scripts/write_CUB_filelist.py # Repeat/adapt for AWA, SUN, aPY
     --n_support 1 --n_query 16
     ```
 
-##Citation
+## Citation
+
 Please cite our work if you use this code or dataset:
 
 If you use this work, please cite:
@@ -124,3 +125,4 @@ If you use this work, please cite:
     doi = {https://doi.org/10.1016/j.neucom.2024.128755},
     url = {https://www.sciencedirect.com/science/article/pii/S0925231224015261}
 }
+```
